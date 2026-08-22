@@ -7,6 +7,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from core.demo import make_demo_data
+from core.fno_research import (
+    build_stock_1115_outcomes,
+    fno_quality_tables,
+    prepare_fno_history,
+    sector_vix_sensitivity,
+    stock_vix_sensitivity,
+    validate_fno_history,
+)
 from core.history import (
     build_1115_outcomes,
     merge_history,
@@ -36,6 +44,12 @@ with st.sidebar:
         accept_multiple_files=True,
         help="Upload one combined file or separate/incremental NIFTY and India VIX files.",
     )
+    fno_uploaded = st.file_uploader(
+        "Upload ALL F&O research CSV",
+        type=["csv"],
+        key="all_fno_research_upload",
+        help="Upload all_fno_stock_research_single_file.csv for stock-level research.",
+    )
     use_demo = st.toggle("Use demonstration dataset", value=not uploaded)
     page = st.radio(
         "Module",
@@ -48,6 +62,10 @@ with st.sidebar:
             "11:15 Validation",
             "Market Replay",
             "Setup Backtester",
+            "F&O Data Health",
+            "Stock 11:15 Outcomes",
+            "Stock VIX Sensitivity",
+            "Sector–VIX Matrix",
         ],
     )
 
@@ -55,6 +73,18 @@ with st.sidebar:
 @st.cache_data(show_spinner=False)
 def load_csv(raw: bytes) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(raw))
+
+
+@st.cache_data(show_spinner="Building point-in-time F&O research outcomes...")
+def load_fno_research(raw: bytes):
+    source = pd.read_csv(io.BytesIO(raw))
+    problems = validate_fno_history(source)
+    if problems:
+        return source, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), problems
+    prepared = prepare_fno_history(source)
+    outcomes = build_stock_1115_outcomes(prepared)
+    stock_quality, session_quality = fno_quality_tables(prepared)
+    return prepared, outcomes, stock_quality, session_quality, []
 
 
 is_demo = False
@@ -217,3 +247,130 @@ elif page == "Setup Backtester":
             "text/csv",
         )
     st.caption("Next phase will join RF, Sector RS, Futures OI, Options and auction-structure signals.")
+
+elif page == "F&O Data Health":
+    st.subheader("All NSE F&O historical data health")
+    if fno_uploaded is None:
+        st.info("Upload `all_fno_stock_research_single_file.csv` in the sidebar.")
+    else:
+        fno, outcomes, stock_quality, session_quality, fno_problems = load_fno_research(
+            fno_uploaded.getvalue()
+        )
+        if fno_problems:
+            st.error("F&O dataset validation failed.")
+            for problem in fno_problems:
+                st.write(f"• {problem}")
+        else:
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Rows", f"{len(fno):,}")
+            d2.metric("F&O Stocks", fno["Stock"].nunique())
+            d3.metric("Sectors", fno["Sector"].nunique())
+            d4.metric("Sessions", fno["session_date"].nunique())
+            st.success("Stock+timestamp uniqueness, OHLC integrity and market context passed validation.")
+            st.subheader("Session coverage")
+            st.dataframe(session_quality, use_container_width=True, hide_index=True)
+            st.subheader("Stock coverage")
+            st.dataframe(stock_quality, use_container_width=True, hide_index=True)
+
+elif page == "Stock 11:15 Outcomes":
+    st.subheader("Point-in-time stock outcomes at the 11:15 decision gate")
+    st.caption(
+        "No-look-ahead correction: entry uses the 10:45 candle close, which becomes known at "
+        "11:15. Checkpoints use completed 30-minute candles at 11:45, 13:15 and 15:15."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        fno, outcomes, _, _, fno_problems = load_fno_research(fno_uploaded.getvalue())
+        if fno_problems:
+            st.error("Correct the F&O input file before analysis: " + " | ".join(fno_problems))
+        elif outcomes.empty:
+            st.warning("No valid 10:45 decision bars were found.")
+        else:
+            o1, o2, o3, o4 = st.columns(4)
+            o1.metric("Stock-Sessions", f"{len(outcomes):,}")
+            o2.metric("Stocks", outcomes["Stock"].nunique())
+            o3.metric("Average MFE", f"{outcomes['mfe_high_pct'].mean():.2f}%")
+            o4.metric("Average MAE", f"{outcomes['mae_low_pct'].mean():.2f}%")
+            sectors = ["ALL"] + sorted(outcomes["Sector"].dropna().unique().tolist())
+            selected_sector = st.selectbox("Sector filter", sectors, key="outcome_sector")
+            filtered = outcomes if selected_sector == "ALL" else outcomes[outcomes["Sector"] == selected_sector]
+            selected_stock = st.selectbox(
+                "Stock filter",
+                ["ALL"] + sorted(filtered["Stock"].unique().tolist()),
+                key="outcome_stock",
+            )
+            if selected_stock != "ALL":
+                filtered = filtered[filtered["Stock"] == selected_stock]
+            st.dataframe(filtered, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download corrected stock 11:15 outcomes",
+                filtered.to_csv(index=False).encode(),
+                "phase3b_fno_stock_1115_outcomes.csv",
+                "text/csv",
+            )
+
+elif page == "Stock VIX Sensitivity":
+    st.subheader("Stock-level India VIX sensitivity rankings")
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        _, outcomes, _, _, fno_problems = load_fno_research(fno_uploaded.getvalue())
+        if fno_problems:
+            st.error("Correct the F&O input file before analysis: " + " | ".join(fno_problems))
+        else:
+            minimum_sessions = st.slider("Minimum valid sessions", 20, 80, 50, 5)
+            sensitivity = stock_vix_sensitivity(outcomes, minimum_sessions)
+            if sensitivity.empty:
+                st.warning("No stocks passed the selected session threshold.")
+            else:
+                st.caption(
+                    "VIX beta measures directional sensitivity to the VIX change from the 11:15 "
+                    "decision gate to 15:15. Negative beta indicates risk-off sensitivity."
+                )
+                left, right = st.columns(2)
+                with left:
+                    st.markdown("#### Most defensive when VIX rises")
+                    st.dataframe(
+                        sensitivity.sort_values("VIX_Defensive_Score", ascending=False).head(25),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                with right:
+                    st.markdown("#### Highest VIX risk")
+                    st.dataframe(
+                        sensitivity.sort_values("VIX_Risk_Score", ascending=False).head(25),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                st.download_button(
+                    "Download complete stock VIX ranking",
+                    sensitivity.to_csv(index=False).encode(),
+                    "phase3b_stock_vix_sensitivity.csv",
+                    "text/csv",
+                )
+
+elif page == "Sector–VIX Matrix":
+    st.subheader("Sector–India VIX sensitivity matrix")
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        _, outcomes, _, _, fno_problems = load_fno_research(fno_uploaded.getvalue())
+        if fno_problems:
+            st.error("Correct the F&O input file before analysis: " + " | ".join(fno_problems))
+        else:
+            sector_matrix = sector_vix_sensitivity(outcomes, minimum_sessions=30)
+            if sector_matrix.empty:
+                st.warning("Insufficient sector observations.")
+            else:
+                st.dataframe(sector_matrix, use_container_width=True, hide_index=True)
+                st.bar_chart(
+                    sector_matrix.set_index("Sector")[["VIX_Beta"]],
+                    use_container_width=True,
+                )
+                st.download_button(
+                    "Download sector–VIX matrix",
+                    sector_matrix.to_csv(index=False).encode(),
+                    "phase3b_sector_vix_matrix.csv",
+                    "text/csv",
+                )

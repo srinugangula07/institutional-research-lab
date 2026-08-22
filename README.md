@@ -23,6 +23,18 @@ Independent Streamlit research application complementary to the live
 - Close-path MFE/MAE and VIX-regime outcome summary
 - Downloadable merged history and 11:15 outcome datasets
 
+## Phase 3B — F&O Stock Research Engine
+
+- Dedicated all-F&O long-format CSV importer
+- Stock+timestamp uniqueness and OHLC integrity validation
+- Corrected 11:15 decision entry using the completed 10:45 candle
+- Completed-candle checkpoints at 11:45, 13:15 and 15:15
+- True high/low MFE and MAE
+- Stock return relative to NIFTY
+- Directional India VIX beta and correlation
+- Defensive and high-risk VIX stock scores
+- Sector–VIX sensitivity matrix
+
 All rolling features use current and prior observations only. Synthetic demonstration data is
 provided strictly to verify the interface and must not be treated as trading evidence.
 
