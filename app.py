@@ -25,6 +25,7 @@ from core.history import (
 )
 from core.research import correlation_table, forward_return_study
 from core.point_in_time import build_1115_rf_rs_features, signal_backtest_summary
+from core.walk_forward import calibration_surface, expanding_walk_forward, threshold_sensitivity
 from core.vix import enrich_vix_features, validate_market_data, vix_risk_multiplier
 
 
@@ -69,6 +70,8 @@ with st.sidebar:
             "Sector–VIX Matrix",
             "RF + RS + VIX Signals",
             "RF + RS + VIX Backtest",
+            "Calibration Sensitivity",
+            "Walk-Forward Validation",
         ],
     )
 
@@ -467,5 +470,87 @@ elif page == "RF + RS + VIX Backtest":
                     "Download filtered Phase 3C backtest trades",
                     active.to_csv(index=False).encode(),
                     "phase3c_rf_rs_vix_backtest_trades.csv",
+                    "text/csv",
+                )
+
+elif page == "Calibration Sensitivity":
+    st.subheader("Phase 3D — Threshold, weight and transaction-cost sensitivity")
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals, signal_problems = load_phase3c_signals(fno_uploaded.getvalue())
+        if signal_problems:
+            st.error(" | ".join(signal_problems))
+        else:
+            cost_bps = st.slider("Round-trip cost and slippage (bps)", 0, 30, 10, 1)
+            sensitivity = threshold_sensitivity(signals, cost_bps=cost_bps)
+            st.markdown("#### Existing 40/35/25 weights")
+            st.dataframe(sensitivity, use_container_width=True, hide_index=True)
+            with st.spinner("Testing institutional weight and long/short threshold combinations..."):
+                surface = calibration_surface(signals, cost_bps=cost_bps, minimum_trades_per_side=100)
+            st.markdown("#### Top in-sample combinations — research only")
+            st.warning(
+                "These are in-sample results and must not become production settings unless "
+                "they also survive the Walk-Forward Validation module."
+            )
+            st.dataframe(surface.head(50), use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download Phase 3D calibration surface",
+                surface.to_csv(index=False).encode(),
+                "phase3d_calibration_surface.csv",
+                "text/csv",
+            )
+
+elif page == "Walk-Forward Validation":
+    st.subheader("Phase 3D — Expanding walk-forward validation")
+    st.caption("Each test window is evaluated using settings chosen only from earlier sessions.")
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals, signal_problems = load_phase3c_signals(fno_uploaded.getvalue())
+        if signal_problems:
+            st.error(" | ".join(signal_problems))
+        else:
+            w1, w2, w3 = st.columns(3)
+            with w1:
+                wf_cost = st.slider("Cost/slippage (bps)", 0, 30, 10, 1, key="wf_cost")
+            with w2:
+                train_sessions = st.slider("Initial training sessions", 40, 60, 50, 5)
+            with w3:
+                test_sessions = st.slider("Test-window sessions", 5, 15, 10, 5)
+            with st.spinner("Running expanding walk-forward calibration..."):
+                folds, trades = expanding_walk_forward(
+                    signals, wf_cost, train_sessions, test_sessions
+                )
+            if folds.empty or trades.empty:
+                st.warning("Insufficient sessions for the selected walk-forward configuration.")
+            else:
+                w1, w2, w3, w4 = st.columns(4)
+                w1.metric("Folds", len(folds))
+                w2.metric("Out-of-sample trades", f"{len(trades):,}")
+                w3.metric("OOS net win rate", f"{(trades['Net_Oriented_Return_%'] > 0).mean() * 100:.1f}%")
+                w4.metric("OOS net expectancy", f"{trades['Net_Oriented_Return_%'].mean():.3f}%")
+                oos_expectancy = trades["Net_Oriented_Return_%"].mean()
+                if oos_expectancy <= 0:
+                    st.error(
+                        "PRODUCTION GATE: FAILED. Out-of-sample expectancy is not positive after "
+                        "costs. Keep RF + RS as a ranking layer; do not trade this model standalone."
+                    )
+                else:
+                    st.success(
+                        "Research gate passed provisionally. Require a larger sample and additional "
+                        "confirmation layers before production use."
+                    )
+                st.dataframe(folds, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Download walk-forward folds",
+                    folds.to_csv(index=False).encode(),
+                    "phase3d_walk_forward_folds.csv",
+                    "text/csv",
+                )
+                st.download_button(
+                    "Download out-of-sample trades",
+                    trades.to_csv(index=False).encode(),
+                    "phase3d_walk_forward_oos_trades.csv",
                     "text/csv",
                 )

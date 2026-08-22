@@ -46,6 +46,16 @@ Independent Streamlit research application complementary to the live
 - Long/short oriented returns, win rates, expectancy and sector attribution
 - Adjustable minimum score threshold and downloadable trade-level evidence
 
+## Phase 3D — Walk-Forward Calibration
+
+- Separate long and short threshold sensitivity
+- RF/Stock RS/Sector RS weight-grid testing
+- Round-trip transaction-cost and slippage deductions
+- Minimum trade-count gates
+- Expanding training windows with strictly later test windows
+- Out-of-sample win rate and net expectancy
+- Production gate that fails automatically when OOS expectancy is non-positive
+
 All rolling features use current and prior observations only. Synthetic demonstration data is
 provided strictly to verify the interface and must not be treated as trading evidence.
 
