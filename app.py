@@ -45,16 +45,27 @@ from core.information_coefficient import (
     information_coefficient_summary,
     quintile_spread,
 )
+from core.feature_attribution import (
+    ablation_summary,
+    component_correlation as feature_component_correlation,
+    daily_ablation_ic,
+    removal_impact,
+)
+from core.morning_auction import (
+    auction_feature_ic,
+    auction_ic_summary,
+    build_morning_auction_features,
+)
 
 
 st.set_page_config(
     page_title="Institutional Research Lab",
-    page_icon="🔬",
+    page_icon="ðŸ”¬",
     layout="wide",
 )
 
 st.title("Institutional Research, Backtesting & Market Replay Lab")
-st.caption("Point-in-time research engine • India VIX regime intelligence • No-look-ahead design")
+st.caption("Point-in-time research engine â€¢ India VIX regime intelligence â€¢ No-look-ahead design")
 
 with st.sidebar:
     st.header("Research controls")
@@ -84,14 +95,14 @@ with st.sidebar:
             "Historical Import Bridge",
             "Data Health",
             "India VIX Intelligence",
-            "VIX–Index Correlation",
+            "VIXâ€“Index Correlation",
             "11:15 Validation",
             "Market Replay",
             "Setup Backtester",
             "F&O Data Health",
             "Stock 11:15 Outcomes",
             "Stock VIX Sensitivity",
-            "Sector–VIX Matrix",
+            "Sectorâ€“VIX Matrix",
             "RF + RS + VIX Signals",
             "RF + RS + VIX Backtest",
             "Calibration Sensitivity",
@@ -99,6 +110,8 @@ with st.sidebar:
             "Cross-Sectional Portfolio",
             "Robustness & Stress Tests",
             "Information Coefficient & Decay",
+            "Feature Attribution & Ablation",
+            "Morning Auction & Volume",
             "Futures Confirmation",
         ],
     )
@@ -150,7 +163,7 @@ problems = validate_market_data(raw_df)
 if problems:
     st.error("The dataset cannot be analysed yet.")
     for problem in problems:
-        st.write(f"• {problem}")
+        st.write(f"â€¢ {problem}")
     st.stop()
 
 session_raw = restrict_nse_session(raw_df)
@@ -175,12 +188,12 @@ if page == "Research Overview":
     c1.metric("Rows", f"{len(df):,}")
     c2.metric("India VIX", f"{latest['india_vix_close']:.2f}", f"{latest['vix_change_pct']:.2f}%")
     c3.metric("VIX regime", latest["vix_regime"])
-    c4.metric("Risk multiplier", f"{vix_risk_multiplier(latest['vix_regime']):.2f}×")
+    c4.metric("Risk multiplier", f"{vix_risk_multiplier(latest['vix_regime']):.2f}Ã—")
 
     st.subheader("Research pipeline")
     st.write(
-        "Data Health → India VIX Regime → Correlation → 11:15 Validation → "
-        "Setup Backtest → Market Replay → Walk-Forward Validation"
+        "Data Health â†’ India VIX Regime â†’ Correlation â†’ 11:15 Validation â†’ "
+        "Setup Backtest â†’ Market Replay â†’ Walk-Forward Validation"
     )
     st.success("Phase 2 is operational: historical import, NSE sessions, VIX intelligence and 11:15 outcomes.")
 
@@ -236,10 +249,10 @@ elif page == "India VIX Intelligence":
         use_container_width=True,
     )
 
-elif page == "VIX–Index Correlation":
+elif page == "VIXâ€“Index Correlation":
     st.subheader("NIFTY return versus India VIX change")
     corr = correlation_table(df, [5, 20, 60, 252])
-    st.dataframe(corr.style.format({"NIFTY–VIX correlation": "{:.3f}"}), use_container_width=True)
+    st.dataframe(corr.style.format({"NIFTYâ€“VIX correlation": "{:.3f}"}), use_container_width=True)
     st.scatter_chart(df, x="vix_change_pct", y="nifty_return_pct", use_container_width=True)
     st.caption("Correlation is calculated on percentage changes, not raw index levels.")
 
@@ -304,7 +317,7 @@ elif page == "F&O Data Health":
         if fno_problems:
             st.error("F&O dataset validation failed.")
             for problem in fno_problems:
-                st.write(f"• {problem}")
+                st.write(f"â€¢ {problem}")
         else:
             d1, d2, d3, d4 = st.columns(4)
             d1.metric("Rows", f"{len(fno):,}")
@@ -395,8 +408,8 @@ elif page == "Stock VIX Sensitivity":
                     "text/csv",
                 )
 
-elif page == "Sector–VIX Matrix":
-    st.subheader("Sector–India VIX sensitivity matrix")
+elif page == "Sectorâ€“VIX Matrix":
+    st.subheader("Sectorâ€“India VIX sensitivity matrix")
     if fno_uploaded is None:
         st.info("Upload the ALL F&O research CSV in the sidebar.")
     else:
@@ -414,7 +427,7 @@ elif page == "Sector–VIX Matrix":
                     use_container_width=True,
                 )
                 st.download_button(
-                    "Download sector–VIX matrix",
+                    "Download sectorâ€“VIX matrix",
                     sector_matrix.to_csv(index=False).encode(),
                     "phase3b_sector_vix_matrix.csv",
                     "text/csv",
@@ -444,7 +457,7 @@ elif page == "RF + RS + VIX Signals":
             s1.metric("Stocks", len(day))
             s2.metric("Long signals", len(day[day["Signal"] == "LONG"]))
             s3.metric("Short signals", len(day[day["Signal"] == "SHORT"]))
-            s4.metric("VIX risk multiplier", f"{day['VIX_Risk_Multiplier'].iloc[0]:.2f}×")
+            s4.metric("VIX risk multiplier", f"{day['VIX_Risk_Multiplier'].iloc[0]:.2f}Ã—")
             left, right = st.columns(2)
             display_columns = [
                 "Stock", "Sector", "RF_1115", "Stock_RS_1115_%", "Sector_RS_1115_%",
@@ -502,7 +515,7 @@ elif page == "RF + RS + VIX Backtest":
                 )
 
 elif page == "Calibration Sensitivity":
-    st.subheader("Phase 3D — Threshold, weight and transaction-cost sensitivity")
+    st.subheader("Phase 3D â€” Threshold, weight and transaction-cost sensitivity")
     if fno_uploaded is None:
         st.info("Upload the ALL F&O research CSV in the sidebar.")
     else:
@@ -516,7 +529,7 @@ elif page == "Calibration Sensitivity":
             st.dataframe(sensitivity, use_container_width=True, hide_index=True)
             with st.spinner("Testing institutional weight and long/short threshold combinations..."):
                 surface = calibration_surface(signals, cost_bps=cost_bps, minimum_trades_per_side=100)
-            st.markdown("#### Top in-sample combinations — research only")
+            st.markdown("#### Top in-sample combinations â€” research only")
             st.warning(
                 "These are in-sample results and must not become production settings unless "
                 "they also survive the Walk-Forward Validation module."
@@ -530,7 +543,7 @@ elif page == "Calibration Sensitivity":
             )
 
 elif page == "Walk-Forward Validation":
-    st.subheader("Phase 3D — Expanding walk-forward validation")
+    st.subheader("Phase 3D â€” Expanding walk-forward validation")
     st.caption("Each test window is evaluated using settings chosen only from earlier sessions.")
     if fno_uploaded is None:
         st.info("Upload the ALL F&O research CSV in the sidebar.")
@@ -762,6 +775,100 @@ elif page == "Information Coefficient & Decay":
                 st.download_button("Download daily IC",daily_ic.to_csv(index=False).encode(),"phase5_daily_information_coefficient.csv","text/csv")
             with c2:
                 st.download_button("Download quintile study",quintiles.to_csv(index=False).encode(),"phase5_score_quintile_study.csv","text/csv")
+
+elif page == "Feature Attribution & Ablation":
+    st.subheader("RF, Stock RS & Sector RS Feature Attribution")
+    st.caption(
+        "Removes one component at a time and tests each component alone. The purpose is to "
+        "diagnose the failed compositeâ€”not to optimize new weights on the same sample."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals,signal_problems=load_phase3c_signals(fno_uploaded.getvalue())
+        if signal_problems:
+            st.error(" | ".join(signal_problems))
+        else:
+            a1,a2=st.columns(2)
+            with a1:
+                ablation_horizon=st.selectbox("Ablation horizon",["11:45","13:15","15:15"],index=2)
+            with a2:
+                ablation_holdout=st.slider("Untouched ablation holdout",10,30,20,5)
+            daily_ablation=daily_ablation_ic(signals,ablation_horizon)
+            attribution=ablation_summary(daily_ablation,ablation_holdout)
+            impact=removal_impact(attribution)
+            st.markdown("#### Component and removal tests")
+            st.dataframe(attribution,use_container_width=True,hide_index=True)
+            st.markdown("#### Marginal holdout contribution")
+            st.dataframe(impact,use_container_width=True,hide_index=True)
+            helpful=impact[impact["Diagnosis"].eq("HELPS")]
+            best_holdout=attribution[attribution["Sample"].eq("HOLDOUT")].sort_values(
+                "Mean_Rank_IC",ascending=False
+            ).iloc[0]
+            if best_holdout["Mean_Rank_IC"] < 0.03 or best_holdout["Positive_IC_Rate_%"] < 55:
+                st.error(
+                    "FEATURE GATE: FAILED. No tested component or removal model has sufficient "
+                    "untouched-holdout rank strength and consistency."
+                )
+            elif helpful.empty:
+                st.warning("No component shows a clear positive marginal contribution in holdout.")
+            else:
+                st.success(
+                    "A component shows provisional marginal value. It must be specified before "
+                    "a new out-of-sample collection period; do not reweight on this sample."
+                )
+            st.markdown("#### Component redundancy")
+            st.dataframe(feature_component_correlation(signals),use_container_width=True)
+            st.download_button(
+                "Download feature-ablation results",attribution.to_csv(index=False).encode(),
+                "phase5_feature_ablation.csv","text/csv",
+            )
+
+elif page == "Morning Auction & Volume":
+    st.subheader("Morning Auction & Volume Structure")
+    st.caption(
+        "Uses only completed 09:15â€“10:45 candles available at the 11:15 decision gate. "
+        "Tests opening gap, Initial Balance location, range extension and point-in-time volume surprise."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        prepared,outcomes,_,_,auction_problems=load_fno_research(fno_uploaded.getvalue())
+        if auction_problems:
+            st.error(" | ".join(auction_problems))
+        else:
+            m1,m2=st.columns(2)
+            with m1:
+                auction_horizon=st.selectbox("Auction outcome horizon",["11:45","13:15","15:15"],index=2)
+            with m2:
+                auction_holdout=st.slider("Untouched auction holdout",10,30,20,5)
+            with st.spinner("Building point-in-time morning auction features..."):
+                auction_data=build_morning_auction_features(prepared,outcomes)
+                auction_daily_ic=auction_feature_ic(auction_data,auction_horizon)
+                auction_summary=auction_ic_summary(auction_daily_ic,auction_holdout)
+            st.dataframe(auction_summary,use_container_width=True,hide_index=True)
+            holdout=auction_summary[auction_summary["Sample"].eq("HOLDOUT")].sort_values(
+                "Mean_Rank_IC",ascending=False
+            )
+            best=holdout.iloc[0]
+            if best["Mean_Rank_IC"] < 0.03 or best["Positive_IC_Rate_%"] < 55 or best["IC_t_Statistic"] < 2:
+                st.error(
+                    "AUCTION FEATURE GATE: FAILED. No morning auction feature has sufficient "
+                    "holdout rank strength, consistency and statistical evidence."
+                )
+            else:
+                st.success(
+                    f"AUCTION FEATURE GATE: PROVISIONALLY PASSED for {best['Feature']}. "
+                    "Require forward validation before combining it with other layers."
+                )
+            st.markdown("#### Latest point-in-time auction observations")
+            display=["session_date","Stock","Sector","Gap_%","IB_Range_%","IB_Location","IB_State","Morning_Return_%","Morning_Volume_Ratio","Auction_Score"]
+            st.dataframe(auction_data[display].tail(300),use_container_width=True,hide_index=True)
+            c1,c2=st.columns(2)
+            with c1:
+                st.download_button("Download auction feature dataset",auction_data.to_csv(index=False).encode(),"phase6_morning_auction_features.csv","text/csv")
+            with c2:
+                st.download_button("Download auction IC study",auction_summary.to_csv(index=False).encode(),"phase6_morning_auction_ic.csv","text/csv")
 
 elif page == "Futures Confirmation":
     st.subheader("Futures OI + Basis Confirmation Layer")
