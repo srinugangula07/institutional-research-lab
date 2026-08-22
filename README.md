@@ -110,3 +110,9 @@ the ALL F&O stock research file, then open **Futures Confirmation**. Invalid
 weekend/out-of-window captures are rejected. The module unlocks descriptive
 results after 20 matched sessions and keeps calibration conclusions locked until
 at least 60 matched sessions are available.
+## Cross-sectional portfolio research
+
+The **Cross-Sectional Portfolio** module tests equal-weight top-score longs
+against bottom-score shorts with sector concentration caps, round-trip costs,
+membership churn, VIX-regime attribution and an untouched holdout period. A
+negative holdout expectancy or Sharpe fails the portfolio gate.

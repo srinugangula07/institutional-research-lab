@@ -33,6 +33,11 @@ from core.futures_confirmation import (
     prepare_futures_snapshots,
     validate_futures_snapshots,
 )
+from core.portfolio_research import (
+    build_cross_sectional_portfolio,
+    portfolio_summary,
+    regime_summary,
+)
 
 
 st.set_page_config(
@@ -84,6 +89,7 @@ with st.sidebar:
             "RF + RS + VIX Backtest",
             "Calibration Sensitivity",
             "Walk-Forward Validation",
+            "Cross-Sectional Portfolio",
             "Futures Confirmation",
         ],
     )
@@ -567,6 +573,68 @@ elif page == "Walk-Forward Validation":
                     "phase3d_walk_forward_oos_trades.csv",
                     "text/csv",
                 )
+
+elif page == "Cross-Sectional Portfolio":
+    st.subheader("Cross-Sectional Long/Short Portfolio Research")
+    st.caption(
+        "Tests RF + RS as a daily ranking spread: equal-weight top-score longs versus "
+        "bottom-score shorts, with sector caps, transaction costs and an untouched holdout."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals, signal_problems = load_phase3c_signals(fno_uploaded.getvalue())
+        if signal_problems:
+            st.error(" | ".join(signal_problems))
+        else:
+            p1,p2,p3,p4 = st.columns(4)
+            with p1:
+                basket_size = st.select_slider("Stocks per side", options=[5,10,15,20,25], value=20)
+            with p2:
+                sector_cap = st.select_slider("Maximum per sector", options=[1,2,3,4,5], value=3)
+            with p3:
+                portfolio_cost = st.slider("Round-trip cost/slippage (bps)",0,30,10,1,key="portfolio_cost")
+            with p4:
+                holdout = st.slider("Untouched holdout sessions",10,30,20,5)
+            daily, holdings = build_cross_sectional_portfolio(
+                signals, basket_size=basket_size, max_per_sector=sector_cap,
+                cost_bps=portfolio_cost,
+            )
+            summary = portfolio_summary(daily, holdout_sessions=holdout)
+            if daily.empty:
+                st.warning("No sessions contain enough stocks after sector-cap controls.")
+            else:
+                st.markdown("#### Portfolio validation")
+                st.dataframe(summary,use_container_width=True,hide_index=True)
+                holdout_row=summary[summary["Sample"].eq("HOLDOUT")]
+                holdout_expectancy=holdout_row["Net_Expectancy_%"].iloc[0]
+                holdout_sharpe=holdout_row["Annualised_Sharpe"].iloc[0]
+                if len(daily) < 60:
+                    st.warning("SAMPLE GATE: fewer than 60 portfolio sessions; conclusions are preliminary.")
+                elif holdout_expectancy <= 0 or pd.isna(holdout_sharpe) or holdout_sharpe <= 0:
+                    st.error(
+                        "PORTFOLIO GATE: FAILED. The top-minus-bottom ranking spread does not "
+                        "retain positive holdout performance after costs."
+                    )
+                else:
+                    st.success(
+                        "PORTFOLIO GATE: PROVISIONALLY PASSED. Continue robustness and "
+                        "walk-forward testing before production use."
+                    )
+                st.line_chart(daily.set_index("session_date")["Equity_Index"])
+                st.markdown("#### India VIX regime attribution")
+                st.dataframe(regime_summary(daily),use_container_width=True,hide_index=True)
+                c1,c2=st.columns(2)
+                with c1:
+                    st.download_button(
+                        "Download daily portfolio results",daily.to_csv(index=False).encode(),
+                        "phase4_cross_sectional_portfolio_daily.csv","text/csv",
+                    )
+                with c2:
+                    st.download_button(
+                        "Download portfolio holdings",holdings.to_csv(index=False).encode(),
+                        "phase4_cross_sectional_portfolio_holdings.csv","text/csv",
+                    )
 
 elif page == "Futures Confirmation":
     st.subheader("Futures OI + Basis Confirmation Layer")
