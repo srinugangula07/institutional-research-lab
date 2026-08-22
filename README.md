@@ -35,6 +35,17 @@ Independent Streamlit research application complementary to the live
 - Defensive and high-risk VIX stock scores
 - Sector–VIX sensitivity matrix
 
+## Phase 3C — Point-in-Time RF + RS + VIX Backtest
+
+- Rotation Factor calculated from four completed morning candles
+- Stock RS versus NIFTY from 09:45 to the 11:15 decision gate
+- Cross-sectional Sector RS
+- Daily RF, Stock RS and Sector RS percentiles
+- Provisional institutional directional score: RF 40%, Stock RS 35%, Sector RS 25%
+- True rolling 60-session VIX percentile used only as a risk multiplier
+- Long/short oriented returns, win rates, expectancy and sector attribution
+- Adjustable minimum score threshold and downloadable trade-level evidence
+
 All rolling features use current and prior observations only. Synthetic demonstration data is
 provided strictly to verify the interface and must not be treated as trading evidence.
 

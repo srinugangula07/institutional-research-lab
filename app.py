@@ -24,6 +24,7 @@ from core.history import (
     session_quality,
 )
 from core.research import correlation_table, forward_return_study
+from core.point_in_time import build_1115_rf_rs_features, signal_backtest_summary
 from core.vix import enrich_vix_features, validate_market_data, vix_risk_multiplier
 
 
@@ -66,6 +67,8 @@ with st.sidebar:
             "Stock 11:15 Outcomes",
             "Stock VIX Sensitivity",
             "Sector–VIX Matrix",
+            "RF + RS + VIX Signals",
+            "RF + RS + VIX Backtest",
         ],
     )
 
@@ -85,6 +88,17 @@ def load_fno_research(raw: bytes):
     outcomes = build_stock_1115_outcomes(prepared)
     stock_quality, session_quality = fno_quality_tables(prepared)
     return prepared, outcomes, stock_quality, session_quality, []
+
+
+@st.cache_data(show_spinner="Calculating point-in-time RF, RS and VIX signals...")
+def load_phase3c_signals(raw: bytes):
+    source = pd.read_csv(io.BytesIO(raw))
+    problems = validate_fno_history(source)
+    if problems:
+        return pd.DataFrame(), problems
+    prepared = prepare_fno_history(source)
+    outcomes = build_stock_1115_outcomes(prepared)
+    return build_1115_rf_rs_features(prepared, outcomes), []
 
 
 is_demo = False
@@ -372,5 +386,86 @@ elif page == "Sector–VIX Matrix":
                     "Download sector–VIX matrix",
                     sector_matrix.to_csv(index=False).encode(),
                     "phase3b_sector_vix_matrix.csv",
+                    "text/csv",
+                )
+
+elif page == "RF + RS + VIX Signals":
+    st.subheader("Point-in-time RF + Stock RS + Sector RS + India VIX signals")
+    st.caption(
+        "All directional inputs use only the 09:15, 09:45, 10:15 and 10:45 candles "
+        "completed by the 11:15 decision gate. India VIX modifies risk, not direction."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals, signal_problems = load_phase3c_signals(fno_uploaded.getvalue())
+        if signal_problems:
+            st.error(" | ".join(signal_problems))
+        elif signals.empty:
+            st.warning("No point-in-time signals were created.")
+        else:
+            dates = sorted(signals["session_date"].unique(), reverse=True)
+            signal_date = st.selectbox("Research session", dates, key="phase3c_signal_date")
+            day = signals[signals["session_date"] == signal_date].copy()
+            long_df = day[day["Signal"] == "LONG"].nlargest(20, "Institutional_Directional_Score")
+            short_df = day[day["Signal"] == "SHORT"].nsmallest(20, "Institutional_Directional_Score")
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("Stocks", len(day))
+            s2.metric("Long signals", len(day[day["Signal"] == "LONG"]))
+            s3.metric("Short signals", len(day[day["Signal"] == "SHORT"]))
+            s4.metric("VIX risk multiplier", f"{day['VIX_Risk_Multiplier'].iloc[0]:.2f}×")
+            left, right = st.columns(2)
+            display_columns = [
+                "Stock", "Sector", "RF_1115", "Stock_RS_1115_%", "Sector_RS_1115_%",
+                "Institutional_Directional_Score", "Signal", "VIX_60D_Percentile",
+                "VIX_Risk_Multiplier", "return_1515_pct", "relative_return_1515_pct",
+            ]
+            with left:
+                st.markdown("#### Top point-in-time longs")
+                st.dataframe(long_df[display_columns], use_container_width=True, hide_index=True)
+            with right:
+                st.markdown("#### Top point-in-time shorts")
+                st.dataframe(short_df[display_columns], use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download complete Phase 3C signal dataset",
+                signals.to_csv(index=False).encode(),
+                "phase3c_rf_rs_vix_signals.csv",
+                "text/csv",
+            )
+
+elif page == "RF + RS + VIX Backtest":
+    st.subheader("RF + RS + VIX point-in-time backtest")
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals, signal_problems = load_phase3c_signals(fno_uploaded.getvalue())
+        if signal_problems:
+            st.error(" | ".join(signal_problems))
+        else:
+            summary = signal_backtest_summary(signals)
+            st.dataframe(summary, use_container_width=True, hide_index=True)
+            active = signals[signals["Signal"].isin(["LONG", "SHORT"])].copy()
+            threshold = st.slider("Minimum absolute institutional score", 40, 80, 40, 5)
+            active = active[active["Institutional_Directional_Score"].abs() >= threshold]
+            if active.empty:
+                st.warning("No trades pass this score threshold.")
+            else:
+                b1, b2, b3, b4 = st.columns(4)
+                b1.metric("Signals", f"{len(active):,}")
+                b2.metric("Sessions", active["session_date"].nunique())
+                b3.metric("Win rate", f"{(active['Oriented_Return_1515_%'] > 0).mean() * 100:.1f}%")
+                b4.metric("Expectancy", f"{active['Oriented_Return_1515_%'].mean():.3f}%")
+                by_sector = active.groupby(["Sector", "Signal"], as_index=False).agg(
+                    Trades=("Stock", "size"),
+                    Win_Rate=("Oriented_Return_1515_%", lambda x: (x > 0).mean() * 100),
+                    Expectancy=("Oriented_Return_1515_%", "mean"),
+                    Relative_Edge=("relative_return_1515_pct", "mean"),
+                )
+                st.subheader("Sector attribution")
+                st.dataframe(by_sector, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Download filtered Phase 3C backtest trades",
+                    active.to_csv(index=False).encode(),
+                    "phase3c_rf_rs_vix_backtest_trades.csv",
                     "text/csv",
                 )
