@@ -39,6 +39,12 @@ from core.portfolio_research import (
     regime_summary,
 )
 from core.robustness import block_bootstrap, leave_one_sector_out, parameter_stability
+from core.information_coefficient import (
+    daily_information_coefficients,
+    ic_regime_summary,
+    information_coefficient_summary,
+    quintile_spread,
+)
 
 
 st.set_page_config(
@@ -92,6 +98,7 @@ with st.sidebar:
             "Walk-Forward Validation",
             "Cross-Sectional Portfolio",
             "Robustness & Stress Tests",
+            "Information Coefficient & Decay",
             "Futures Confirmation",
         ],
     )
@@ -703,6 +710,58 @@ elif page == "Robustness & Stress Tests":
                     st.download_button("Download parameter stability",stability.to_csv(index=False).encode(),"phase4_parameter_stability.csv","text/csv")
                 with c3:
                     st.download_button("Download sector stress",sector_stress.to_csv(index=False).encode(),"phase4_sector_dependency.csv","text/csv")
+
+elif page == "Information Coefficient & Decay":
+    st.subheader("Information Coefficient & Signal Decay")
+    st.caption(
+        "Measures cross-sectional Spearman rank correlation between the 11:15 score and "
+        "subsequent stock return relative to NIFTY. This tests ranking quality without "
+        "forcing arbitrary trade thresholds."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals,signal_problems=load_phase3c_signals(fno_uploaded.getvalue())
+        if signal_problems:
+            st.error(" | ".join(signal_problems))
+        else:
+            ic_holdout=st.slider("Untouched IC holdout sessions",10,30,20,5)
+            daily_ic=daily_information_coefficients(signals)
+            summary=information_coefficient_summary(daily_ic,ic_holdout)
+            st.markdown("#### Horizon decay and holdout stability")
+            st.dataframe(summary,use_container_width=True,hide_index=True)
+            holdout_1515=summary[
+                summary["Sample"].eq("HOLDOUT") & summary["Horizon"].eq("15:15")
+            ]
+            if holdout_1515.empty:
+                st.warning("Insufficient holdout sessions for the 15:15 IC gate.")
+            else:
+                row=holdout_1515.iloc[0]
+                if row["Mean_Rank_IC"] < 0.03 or row["Positive_IC_Rate_%"] < 55 or row["IC_t_Statistic"] < 2:
+                    st.error(
+                        "RANKING IC GATE: FAILED. Holdout ranking strength, consistency or "
+                        "statistical evidence is below the institutional threshold."
+                    )
+                else:
+                    st.success("RANKING IC GATE: PROVISIONALLY PASSED in the untouched holdout.")
+            chart=daily_ic.pivot(index="session_date",columns="Horizon",values="Rolling_20D_IC")
+            st.line_chart(chart)
+            st.markdown("#### Score-quintile monotonicity")
+            horizon=st.selectbox("Quintile outcome horizon",["11:45","13:15","15:15"],index=2)
+            quintiles=quintile_spread(signals,horizon)
+            quintile_summary=quintiles.groupby("Score_Quintile",as_index=False).agg(
+                Mean_Relative_Return=("Mean_Relative_Return_%","mean"),
+                Sessions=("session_date","nunique"),
+            )
+            st.bar_chart(quintile_summary.set_index("Score_Quintile")["Mean_Relative_Return"])
+            st.dataframe(quintile_summary,use_container_width=True,hide_index=True)
+            st.markdown("#### India VIX regime IC")
+            st.dataframe(ic_regime_summary(daily_ic),use_container_width=True,hide_index=True)
+            c1,c2=st.columns(2)
+            with c1:
+                st.download_button("Download daily IC",daily_ic.to_csv(index=False).encode(),"phase5_daily_information_coefficient.csv","text/csv")
+            with c2:
+                st.download_button("Download quintile study",quintiles.to_csv(index=False).encode(),"phase5_score_quintile_study.csv","text/csv")
 
 elif page == "Futures Confirmation":
     st.subheader("Futures OI + Basis Confirmation Layer")
