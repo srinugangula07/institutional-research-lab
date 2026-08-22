@@ -45,12 +45,6 @@ from core.information_coefficient import (
     information_coefficient_summary,
     quintile_spread,
 )
-from core.feature_attribution import (
-    ablation_summary,
-    component_correlation as feature_component_correlation,
-    daily_ablation_ic,
-    removal_impact,
-)
 
 
 st.set_page_config(
@@ -105,7 +99,6 @@ with st.sidebar:
             "Cross-Sectional Portfolio",
             "Robustness & Stress Tests",
             "Information Coefficient & Decay",
-            "Feature Attribution & Ablation",
             "Futures Confirmation",
         ],
     )
@@ -769,54 +762,6 @@ elif page == "Information Coefficient & Decay":
                 st.download_button("Download daily IC",daily_ic.to_csv(index=False).encode(),"phase5_daily_information_coefficient.csv","text/csv")
             with c2:
                 st.download_button("Download quintile study",quintiles.to_csv(index=False).encode(),"phase5_score_quintile_study.csv","text/csv")
-
-elif page == "Feature Attribution & Ablation":
-    st.subheader("RF, Stock RS & Sector RS Feature Attribution")
-    st.caption(
-        "Removes one component at a time and tests each component alone. The purpose is to "
-        "diagnose the failed composite—not to optimize new weights on the same sample."
-    )
-    if fno_uploaded is None:
-        st.info("Upload the ALL F&O research CSV in the sidebar.")
-    else:
-        signals,signal_problems=load_phase3c_signals(fno_uploaded.getvalue())
-        if signal_problems:
-            st.error(" | ".join(signal_problems))
-        else:
-            a1,a2=st.columns(2)
-            with a1:
-                ablation_horizon=st.selectbox("Ablation horizon",["11:45","13:15","15:15"],index=2)
-            with a2:
-                ablation_holdout=st.slider("Untouched ablation holdout",10,30,20,5)
-            daily_ablation=daily_ablation_ic(signals,ablation_horizon)
-            attribution=ablation_summary(daily_ablation,ablation_holdout)
-            impact=removal_impact(attribution)
-            st.markdown("#### Component and removal tests")
-            st.dataframe(attribution,use_container_width=True,hide_index=True)
-            st.markdown("#### Marginal holdout contribution")
-            st.dataframe(impact,use_container_width=True,hide_index=True)
-            helpful=impact[impact["Diagnosis"].eq("HELPS")]
-            best_holdout=attribution[attribution["Sample"].eq("HOLDOUT")].sort_values(
-                "Mean_Rank_IC",ascending=False
-            ).iloc[0]
-            if best_holdout["Mean_Rank_IC"] < 0.03 or best_holdout["Positive_IC_Rate_%"] < 55:
-                st.error(
-                    "FEATURE GATE: FAILED. No tested component or removal model has sufficient "
-                    "untouched-holdout rank strength and consistency."
-                )
-            elif helpful.empty:
-                st.warning("No component shows a clear positive marginal contribution in holdout.")
-            else:
-                st.success(
-                    "A component shows provisional marginal value. It must be specified before "
-                    "a new out-of-sample collection period; do not reweight on this sample."
-                )
-            st.markdown("#### Component redundancy")
-            st.dataframe(feature_component_correlation(signals),use_container_width=True)
-            st.download_button(
-                "Download feature-ablation results",attribution.to_csv(index=False).encode(),
-                "phase5_feature_ablation.csv","text/csv",
-            )
 
 elif page == "Futures Confirmation":
     st.subheader("Futures OI + Basis Confirmation Layer")
