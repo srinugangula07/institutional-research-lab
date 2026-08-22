@@ -27,6 +27,12 @@ from core.research import correlation_table, forward_return_study
 from core.point_in_time import build_1115_rf_rs_features, signal_backtest_summary
 from core.walk_forward import calibration_surface, expanding_walk_forward, threshold_sensitivity
 from core.vix import enrich_vix_features, validate_market_data, vix_risk_multiplier
+from core.futures_confirmation import (
+    build_futures_confirmation,
+    futures_confirmation_summary,
+    prepare_futures_snapshots,
+    validate_futures_snapshots,
+)
 
 
 st.set_page_config(
@@ -52,6 +58,12 @@ with st.sidebar:
         key="all_fno_research_upload",
         help="Upload all_fno_stock_research_single_file.csv for stock-level research.",
     )
+    futures_uploaded = st.file_uploader(
+        "Upload cumulative Futures Research CSV",
+        type=["csv"],
+        key="futures_research_upload",
+        help="Upload all_fno_futures_research_single_file.csv from the live dashboard.",
+    )
     use_demo = st.toggle("Use demonstration dataset", value=not uploaded)
     page = st.radio(
         "Module",
@@ -72,6 +84,7 @@ with st.sidebar:
             "RF + RS + VIX Backtest",
             "Calibration Sensitivity",
             "Walk-Forward Validation",
+            "Futures Confirmation",
         ],
     )
 
@@ -552,5 +565,67 @@ elif page == "Walk-Forward Validation":
                     "Download out-of-sample trades",
                     trades.to_csv(index=False).encode(),
                     "phase3d_walk_forward_oos_trades.csv",
+                    "text/csv",
+                )
+
+elif page == "Futures Confirmation":
+    st.subheader("Futures OI + Basis Confirmation Layer")
+    st.caption(
+        "Tests whether true futures positioning improves RF + RS ranking. Futures confirms or "
+        "rejects a stock signal; it does not create direction by itself."
+    )
+    if fno_uploaded is None or futures_uploaded is None:
+        st.info("Upload both the ALL F&O stock research CSV and cumulative Futures Research CSV.")
+    else:
+        signals, signal_problems = load_phase3c_signals(fno_uploaded.getvalue())
+        futures_source = load_csv(futures_uploaded.getvalue())
+        futures_problems = validate_futures_snapshots(futures_source)
+        problems = signal_problems + futures_problems
+        if problems:
+            st.error("Dataset rejected: " + " | ".join(problems))
+        else:
+            futures = prepare_futures_snapshots(futures_source, slot="11:15")
+            matched = build_futures_confirmation(signals, futures)
+            collected_sessions = futures["session_date"].nunique()
+            matched_sessions = matched["session_date"].nunique() if not matched.empty else 0
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("Futures sessions", collected_sessions)
+            c2.metric("Futures stock-rows", f"{len(futures):,}")
+            c3.metric("Matched sessions", matched_sessions)
+            c4.metric("Matched stock-rows", f"{len(matched):,}")
+            if matched.empty:
+                st.warning(
+                    "No date overlap exists yet. Continue daily Futures capture and refresh the "
+                    "ALL F&O stock research file so both datasets contain the same sessions."
+                )
+            elif matched_sessions < 20:
+                st.warning(
+                    f"COLLECTION GATE: {matched_sessions}/20 matched sessions. Data health may be "
+                    "reviewed, but expectancy and production conclusions remain locked."
+                )
+                st.dataframe(
+                    matched[["session_date", "Stock", "Signal", "Positioning", "Futures_Alignment",
+                             "OI_Change_%", "Basis_%", "Basis_State"]].tail(300),
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                cost_bps = st.slider("Round-trip cost/slippage (bps)", 0, 30, 10, 1, key="futures_cost")
+                summary = futures_confirmation_summary(matched, cost_bps)
+                st.dataframe(summary, use_container_width=True, hide_index=True)
+                confirmed = matched[matched["Futures_Confirmed"]].copy()
+                net = confirmed["Oriented_Return_1515_%"].mean() - cost_bps / 100.0 if not confirmed.empty else float("nan")
+                if matched_sessions < 60:
+                    st.warning(
+                        "PRELIMINARY ONLY: 20 sessions unlock descriptive analysis; require at "
+                        "least 60 matched sessions before threshold calibration."
+                    )
+                elif pd.isna(net) or net <= 0:
+                    st.error("FUTURES CONFIRMATION GATE: FAILED after estimated costs.")
+                else:
+                    st.success("Futures confirmation shows provisional positive expectancy after costs.")
+                st.download_button(
+                    "Download futures-confirmed research dataset",
+                    matched.to_csv(index=False).encode(),
+                    "phase4_futures_confirmation_dataset.csv",
                     "text/csv",
                 )

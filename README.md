@@ -103,3 +103,10 @@ Upload files**. GitHub will replace changed files and add `core/history.py` plus
 5. Market Profile/Volume Profile replay
 6. Portfolio backtesting and Monte Carlo analysis
 7. Walk-forward validation and model-drift reports
+## Futures confirmation layer
+
+Upload the cumulative `all_fno_futures_research_single_file.csv` together with
+the ALL F&O stock research file, then open **Futures Confirmation**. Invalid
+weekend/out-of-window captures are rejected. The module unlocks descriptive
+results after 20 matched sessions and keeps calibration conclusions locked until
+at least 60 matched sessions are available.
