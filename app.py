@@ -61,6 +61,25 @@ from core.stock_replay import (
     replay_sector_breadth,
     replay_session,
 )
+from core.sector_neutral import (
+    build_sector_neutral_dataset,
+    sector_neutral_daily_ic,
+    sector_neutral_summary,
+    sector_residual_attribution,
+)
+from core.probability_calibration import probability_calibration
+from core.excursion_diagnostics import (
+    build_excursion_diagnostics,
+    excursion_distribution,
+    excursion_summary,
+)
+from core.liquidity_capacity import (
+    build_liquidity_capacity,
+    latest_capacity_table,
+    liquidity_performance,
+)
+from core.false_discovery import candidate_daily_ic, false_discovery_control
+from core.research_scorecard import build_research_scorecard
 
 
 st.set_page_config(
@@ -118,6 +137,12 @@ with st.sidebar:
             "Feature Attribution & Ablation",
             "Morning Auction & Volume",
             "Stock Session Replay",
+            "Sector-Neutral Residual IC",
+            "Probability Calibration",
+            "MFE MAE & Exit Diagnostics",
+            "Liquidity & Capacity",
+            "False Discovery Control",
+            "Final Research Scorecard",
             "Futures Confirmation",
         ],
     )
@@ -914,6 +939,223 @@ elif page == "Stock Session Replay":
                 "Download selected replay case",session_view.to_csv(index=False).encode(),
                 f"stock_replay_{replay_date}_{replay_checkpoint.replace(':','')}.csv","text/csv",
             )
+
+elif page == "Sector-Neutral Residual IC":
+    st.subheader("Within-Sector Ranking & Residual Return Research")
+    st.caption(
+        "Removes each sector's forward move and asks whether RF/RS can rank stocks against "
+        "true peers inside the same sector. This separates stock selection from sector rotation."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals,sector_neutral_problems=load_phase3c_signals(fno_uploaded.getvalue())
+        if sector_neutral_problems:
+            st.error(" | ".join(sector_neutral_problems))
+        else:
+            s1,s2,s3=st.columns(3)
+            with s1:
+                residual_horizon=st.selectbox("Residual outcome horizon",["11:45","13:15","15:15"],index=2)
+            with s2:
+                residual_holdout=st.slider("Untouched residual holdout",10,30,20,5)
+            with s3:
+                minimum_sector_stocks=st.slider("Minimum stocks per sector",3,8,3)
+            dataset=build_sector_neutral_dataset(signals,minimum_sector_stocks)
+            daily_residual_ic=sector_neutral_daily_ic(dataset,residual_horizon)
+            residual_summary=sector_neutral_summary(daily_residual_ic,residual_holdout)
+            st.dataframe(residual_summary,use_container_width=True,hide_index=True)
+            holdout=residual_summary[residual_summary["Sample"].eq("HOLDOUT")].sort_values(
+                "Mean_Rank_IC",ascending=False
+            )
+            best=holdout.iloc[0]
+            if best["Mean_Rank_IC"] < 0.03 or best["Positive_IC_Rate_%"] < 55 or best["IC_t_Statistic"] < 2:
+                st.error(
+                    "SECTOR-NEUTRAL GATE: FAILED. Within-sector ranking does not have sufficient "
+                    "holdout IC, consistency and statistical evidence."
+                )
+            else:
+                st.success(
+                    f"SECTOR-NEUTRAL GATE: PROVISIONALLY PASSED for {best['Feature']}. "
+                    "Require forward validation before use."
+                )
+            st.markdown("#### Sector residual attribution")
+            attribution=sector_residual_attribution(dataset,residual_horizon)
+            st.dataframe(attribution,use_container_width=True,hide_index=True)
+            c1,c2=st.columns(2)
+            with c1:
+                st.download_button("Download sector-neutral dataset",dataset.to_csv(index=False).encode(),"phase7_sector_neutral_dataset.csv","text/csv")
+            with c2:
+                st.download_button("Download sector-neutral IC",residual_summary.to_csv(index=False).encode(),"phase7_sector_neutral_ic.csv","text/csv")
+
+elif page == "Probability Calibration":
+    st.subheader("Score Probability Calibration & Reliability")
+    st.caption(
+        "Learns fixed score-band outperform probabilities only from development sessions, "
+        "then evaluates calibration on an untouched holdout."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals,problems=load_phase3c_signals(fno_uploaded.getvalue())
+        if problems:
+            st.error(" | ".join(problems))
+        else:
+            p1,p2=st.columns(2)
+            with p1:
+                calibration_horizon=st.selectbox("Calibration horizon",["11:45","13:15","15:15"],index=2)
+            with p2:
+                calibration_holdout=st.slider("Calibration holdout sessions",10,30,20,5)
+            metrics,curve,calibration_rows=probability_calibration(
+                signals,calibration_holdout,calibration_horizon
+            )
+            st.dataframe(metrics,use_container_width=True,hide_index=True)
+            st.dataframe(curve,use_container_width=True,hide_index=True)
+            row=metrics.iloc[0]
+            if (
+                row["Holdout_Brier_Score"] >= row["Naive_50pct_Brier"]
+                or row["Expected_Calibration_Error"] > 0.05
+                or not bool(row["Holdout_Monotonic"])
+            ):
+                st.error("CALIBRATION GATE: FAILED. Score bands do not produce reliable holdout probabilities.")
+            else:
+                st.success("CALIBRATION GATE: PROVISIONALLY PASSED.")
+            st.download_button("Download calibration curve",curve.to_csv(index=False).encode(),"phase8_probability_calibration.csv","text/csv")
+
+elif page == "MFE MAE & Exit Diagnostics":
+    st.subheader("MFE/MAE & Exit-Horizon Diagnostics")
+    st.caption(
+        "Describes favorable/adverse excursion and checkpoint decay. It does not infer stop/target "
+        "ordering from OHLC bars and therefore avoids ambiguous intrabar backtests."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals,problems=load_phase3c_signals(fno_uploaded.getvalue())
+        if problems:
+            st.error(" | ".join(problems))
+        else:
+            exit_cost=st.slider("Exit diagnostic costs (bps)",0,30,10,1)
+            excursions=build_excursion_diagnostics(signals,exit_cost)
+            checkpoint_summary=excursion_summary(excursions)
+            distribution=excursion_distribution(excursions)
+            st.markdown("#### Checkpoint decay")
+            st.dataframe(checkpoint_summary,use_container_width=True,hide_index=True)
+            st.markdown("#### Excursion by score strength")
+            st.dataframe(distribution,use_container_width=True,hide_index=True)
+            best=checkpoint_summary.sort_values("Expectancy_%",ascending=False).iloc[0]
+            if best["Expectancy_%"] <= 0:
+                st.error("EXIT DIAGNOSTIC: No checkpoint repairs gross directional expectancy.")
+            else:
+                st.warning(
+                    f"Best gross checkpoint is {best['Checkpoint']} at {best['Expectancy_%']:.4f}%. "
+                    "Treat as diagnostic until separately validated after costs."
+                )
+            st.download_button("Download excursion diagnostics",excursions.to_csv(index=False).encode(),"phase8_excursion_diagnostics.csv","text/csv")
+
+elif page == "Liquidity & Capacity":
+    st.subheader("Liquidity, Participation & Capacity Analysis")
+    st.caption(
+        "Estimates one-side capacity from observed morning traded value. This is a research "
+        "participation limit, not a guarantee of executable size."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals,problems=load_phase3c_signals(fno_uploaded.getvalue())
+        if problems:
+            st.error(" | ".join(problems))
+        else:
+            l1,l2=st.columns(2)
+            with l1:
+                participation=st.slider("Maximum morning participation (%)",0.1,5.0,1.0,0.1)
+            with l2:
+                liquidity_cost=st.slider("Liquidity analysis costs (bps)",0,30,10,1)
+            capacity=build_liquidity_capacity(signals,participation)
+            performance=liquidity_performance(capacity,liquidity_cost)
+            st.dataframe(performance,use_container_width=True,hide_index=True)
+            st.markdown("#### Latest-session capacity table")
+            latest_capacity=latest_capacity_table(capacity)
+            st.dataframe(latest_capacity,use_container_width=True,hide_index=True)
+            top_liquid=performance[performance["Liquidity_Bucket"].eq("TOP 20%")]
+            if top_liquid.empty or top_liquid.iloc[0]["Net_Expectancy"] <= 0:
+                st.error("LIQUIDITY GATE: FAILED. Restricting to the most liquid stocks does not restore expectancy.")
+            else:
+                st.success("Top-liquidity signals show provisional positive net expectancy.")
+            st.download_button("Download latest capacity table",latest_capacity.to_csv(index=False).encode(),"phase8_latest_capacity.csv","text/csv")
+
+elif page == "False Discovery Control":
+    st.subheader("Multiple Testing & False-Discovery Control")
+    st.caption(
+        "Applies session-level sign-flip tests and Benjamini–Hochberg correction across all "
+        "predefined RF, RS, auction and sector-neutral candidates."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        prepared,outcomes,_,_,history_problems=load_fno_research(fno_uploaded.getvalue())
+        signals,signal_problems=load_phase3c_signals(fno_uploaded.getvalue())
+        problems=history_problems+signal_problems
+        if problems:
+            st.error(" | ".join(problems))
+        else:
+            f1,f2=st.columns(2)
+            with f1:
+                discovery_horizon=st.selectbox("False-discovery horizon",["11:45","13:15","15:15"],index=2)
+            with f2:
+                permutations=st.select_slider("Sign-flip permutations",[500,1000,2000,5000],value=2000)
+            with st.spinner("Running family-wide false-discovery control..."):
+                auction_data=build_morning_auction_features(prepared,outcomes)
+                residual_data=build_sector_neutral_dataset(signals,3)
+                family_ic=candidate_daily_ic(signals,auction_data,residual_data,discovery_horizon)
+                discovery=false_discovery_control(family_ic,permutations,42)
+            st.dataframe(discovery,use_container_width=True,hide_index=True)
+            if not discovery["Survives_5pct_FDR"].any():
+                st.error("FALSE-DISCOVERY GATE: FAILED. No candidate survives 5% family-wide FDR.")
+            else:
+                st.success("At least one candidate survives 5% FDR; require untouched forward confirmation.")
+            st.download_button("Download false-discovery audit",discovery.to_csv(index=False).encode(),"phase8_false_discovery_control.csv","text/csv")
+
+elif page == "Final Research Scorecard":
+    st.subheader("Institutional Research Gate Scorecard")
+    st.caption("Consolidates evidence. A failed or pending independent gate prevents production admission.")
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        prepared,outcomes,_,_,history_problems=load_fno_research(fno_uploaded.getvalue())
+        signals,signal_problems=load_phase3c_signals(fno_uploaded.getvalue())
+        problems=history_problems+signal_problems
+        if problems:
+            st.error(" | ".join(problems))
+        else:
+            scorecard_cost=st.slider("Scorecard costs (bps)",0,30,10,1)
+            with st.spinner("Rebuilding all independent research gates..."):
+                portfolio_daily,_=build_cross_sectional_portfolio(signals,20,3,scorecard_cost)
+                portfolio_table=portfolio_summary(portfolio_daily,20)
+                daily_ic=daily_information_coefficients(signals)
+                ic_table=information_coefficient_summary(daily_ic,20)
+                auction_data=build_morning_auction_features(prepared,outcomes)
+                auction_table=auction_ic_summary(auction_feature_ic(auction_data,"15:15"),20)
+                residual_data=build_sector_neutral_dataset(signals,3)
+                residual_table=sector_neutral_summary(sector_neutral_daily_ic(residual_data,"15:15"),20)
+                family_ic=candidate_daily_ic(signals,auction_data,residual_data,"15:15")
+                discovery=false_discovery_control(family_ic,2000,42)
+                futures_sessions=0
+                if futures_uploaded is not None:
+                    futures_source=load_csv(futures_uploaded.getvalue())
+                    if not validate_futures_snapshots(futures_source):
+                        futures_sessions=prepare_futures_snapshots(futures_source,"11:15")["session_date"].nunique()
+                scorecard=build_research_scorecard(
+                    signals,portfolio_table,ic_table,auction_table,residual_table,
+                    discovery,futures_sessions,scorecard_cost,
+                )
+            st.dataframe(scorecard,use_container_width=True,hide_index=True)
+            passed=int(scorecard["Passed"].sum())
+            st.metric("Passed gates",f"{passed}/{len(scorecard)}")
+            if scorecard["Passed"].all():
+                st.success("All research gates passed provisionally. Independent live validation is still required.")
+            else:
+                st.error("PRODUCTION ADMISSION: REJECTED. Keep the system in research/ranking mode.")
+            st.download_button("Download final research scorecard",scorecard.to_csv(index=False).encode(),"final_institutional_research_scorecard.csv","text/csv")
 
 elif page == "Futures Confirmation":
     st.subheader("Futures OI + Basis Confirmation Layer")
