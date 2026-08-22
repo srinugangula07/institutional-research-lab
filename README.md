@@ -116,3 +116,10 @@ The **Cross-Sectional Portfolio** module tests equal-weight top-score longs
 against bottom-score shorts with sector concentration caps, round-trip costs,
 membership churn, VIX-regime attribution and an untouched holdout period. A
 negative holdout expectancy or Sharpe fails the portfolio gate.
+## Robustness and stress testing
+
+The **Robustness & Stress Tests** module runs five-session block bootstraps,
+basket-size and cost grids, and leave-one-sector-out dependency checks. The
+robustness gate requires a positive lower confidence bound, at least 95%
+bootstrap probability of positive expectancy, broad parameter stability and
+broad sector-exclusion stability.

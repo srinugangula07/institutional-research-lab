@@ -55,7 +55,8 @@ def build_cross_sectional_portfolio(
         long_churn = 1.0 if not previous_long else 1 - len(long_names & previous_long) / basket_size
         short_churn = 1.0 if not previous_short else 1 - len(short_names & previous_short) / basket_size
         membership_churn = 0.5 * (long_churn + short_churn)
-        vix_pct = pd.to_numeric(day["VIX_60D_Percentile"], errors="coerce").median()
+        vix_values = pd.to_numeric(day["VIX_60D_Percentile"], errors="coerce").dropna()
+        vix_pct = vix_values.median() if not vix_values.empty else np.nan
         regime = "UNAVAILABLE"
         if pd.notna(vix_pct):
             regime = "LOW" if vix_pct < 33 else "HIGH" if vix_pct >= 67 else "NORMAL"

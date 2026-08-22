@@ -38,6 +38,7 @@ from core.portfolio_research import (
     portfolio_summary,
     regime_summary,
 )
+from core.robustness import block_bootstrap, leave_one_sector_out, parameter_stability
 
 
 st.set_page_config(
@@ -90,6 +91,7 @@ with st.sidebar:
             "Calibration Sensitivity",
             "Walk-Forward Validation",
             "Cross-Sectional Portfolio",
+            "Robustness & Stress Tests",
             "Futures Confirmation",
         ],
     )
@@ -635,6 +637,72 @@ elif page == "Cross-Sectional Portfolio":
                         "Download portfolio holdings",holdings.to_csv(index=False).encode(),
                         "phase4_cross_sectional_portfolio_holdings.csv","text/csv",
                     )
+
+elif page == "Robustness & Stress Tests":
+    st.subheader("Robustness, Bootstrap & Dependency Stress Tests")
+    st.caption(
+        "Challenges the ranking portfolio across costs, basket breadth, clustered session "
+        "resampling and sector exclusions. This module searches for fragility, not the best backtest."
+    )
+    if fno_uploaded is None:
+        st.info("Upload the ALL F&O research CSV in the sidebar.")
+    else:
+        signals, signal_problems = load_phase3c_signals(fno_uploaded.getvalue())
+        if signal_problems:
+            st.error(" | ".join(signal_problems))
+        else:
+            r1,r2,r3,r4 = st.columns(4)
+            with r1:
+                robust_basket=st.select_slider("Bootstrap basket per side",[5,10,15,20,25],value=20)
+            with r2:
+                robust_sector_cap=st.select_slider("Sector cap",[1,2,3,4,5],value=3,key="robust_cap")
+            with r3:
+                robust_cost=st.slider("Cost/slippage (bps)",0,30,10,1,key="robust_cost")
+            with r4:
+                simulations=st.select_slider("Bootstrap simulations",[250,500,1000,2000],value=1000)
+            with st.spinner("Running parameter, bootstrap and sector-dependency stress tests..."):
+                daily,_=build_cross_sectional_portfolio(
+                    signals,robust_basket,robust_sector_cap,robust_cost
+                )
+                bootstrap_summary,bootstrap_paths=block_bootstrap(
+                    daily,simulations=simulations,block_size=5,seed=42
+                )
+                stability=parameter_stability(signals,sector_cap=robust_sector_cap)
+                sector_stress=leave_one_sector_out(
+                    signals,robust_basket,robust_sector_cap,robust_cost
+                )
+            if bootstrap_summary.empty:
+                st.warning("At least 20 complete portfolio sessions are required.")
+            else:
+                st.markdown("#### Block-bootstrap evidence")
+                st.dataframe(bootstrap_summary,use_container_width=True,hide_index=True)
+                probability=bootstrap_summary.iloc[0]["Probability_Positive_Expectancy_%"]
+                lower=bootstrap_summary.iloc[0]["Expectancy_5th_%"]
+                stable_positive=(
+                    not stability.empty
+                    and stability.groupby("Basket_Size_Per_Side")["Positive_After_Costs"].any().mean() >= 0.8
+                )
+                sector_positive=(
+                    not sector_stress.empty and sector_stress["Positive_After_Exclusion"].mean() >= 0.8
+                )
+                if probability < 95 or lower <= 0 or not stable_positive or not sector_positive:
+                    st.error(
+                        "ROBUSTNESS GATE: FAILED. Positive expectancy is not supported across "
+                        "resampling, parameter neighborhoods and sector exclusions."
+                    )
+                else:
+                    st.success("ROBUSTNESS GATE: PROVISIONALLY PASSED across all required tests.")
+                st.markdown("#### Basket-size and cost stability")
+                st.dataframe(stability,use_container_width=True,hide_index=True)
+                st.markdown("#### Leave-one-sector-out dependency")
+                st.dataframe(sector_stress,use_container_width=True,hide_index=True)
+                c1,c2,c3=st.columns(3)
+                with c1:
+                    st.download_button("Download bootstrap paths",bootstrap_paths.to_csv(index=False).encode(),"phase4_bootstrap_paths.csv","text/csv")
+                with c2:
+                    st.download_button("Download parameter stability",stability.to_csv(index=False).encode(),"phase4_parameter_stability.csv","text/csv")
+                with c3:
+                    st.download_button("Download sector stress",sector_stress.to_csv(index=False).encode(),"phase4_sector_dependency.csv","text/csv")
 
 elif page == "Futures Confirmation":
     st.subheader("Futures OI + Basis Confirmation Layer")
