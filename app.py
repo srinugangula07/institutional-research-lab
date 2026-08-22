@@ -7,6 +7,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from core.demo import make_demo_data
+from core.history import (
+    build_1115_outcomes,
+    merge_history,
+    normalise_columns,
+    outcome_summary,
+    restrict_nse_session,
+    session_quality,
+)
 from core.research import correlation_table, forward_return_study
 from core.vix import enrich_vix_features, validate_market_data, vix_risk_multiplier
 
@@ -22,12 +30,18 @@ st.caption("Point-in-time research engine • India VIX regime intelligence • 
 
 with st.sidebar:
     st.header("Research controls")
-    uploaded = st.file_uploader("Upload NIFTY + India VIX CSV", type=["csv"])
-    use_demo = st.toggle("Use demonstration dataset", value=uploaded is None)
+    uploaded = st.file_uploader(
+        "Upload historical CSV files",
+        type=["csv"],
+        accept_multiple_files=True,
+        help="Upload one combined file or separate/incremental NIFTY and India VIX files.",
+    )
+    use_demo = st.toggle("Use demonstration dataset", value=not uploaded)
     page = st.radio(
         "Module",
         [
             "Research Overview",
+            "Historical Import Bridge",
             "Data Health",
             "India VIX Intelligence",
             "VIX–Index Correlation",
@@ -43,10 +57,15 @@ def load_csv(raw: bytes) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(raw))
 
 
-if uploaded is not None:
-    raw_df = load_csv(uploaded.getvalue())
+is_demo = False
+if uploaded:
+    raw_df = None
+    for item in uploaded:
+        incoming = normalise_columns(load_csv(item.getvalue()))
+        raw_df = merge_history(raw_df, incoming)
 elif use_demo:
     raw_df = make_demo_data()
+    is_demo = True
     st.info("Demonstration mode uses synthetic data. Do not treat its statistics as trading evidence.")
 else:
     st.warning("Upload a CSV or enable the demonstration dataset.")
@@ -59,7 +78,21 @@ if problems:
         st.write(f"• {problem}")
     st.stop()
 
-df = enrich_vix_features(raw_df)
+session_raw = restrict_nse_session(raw_df)
+df = enrich_vix_features(session_raw)
+if df.empty:
+    st.error("No weekday observations between 09:15 and 15:30 remain after NSE-session filtering.")
+    st.stop()
+
+with st.sidebar:
+    min_date = df["timestamp"].dt.date.min()
+    max_date = df["timestamp"].dt.date.max()
+    date_range = st.date_input("Research date range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+
+if isinstance(date_range, tuple) and len(date_range) == 2:
+    start_date, end_date = date_range
+    df = df[(df["timestamp"].dt.date >= start_date) & (df["timestamp"].dt.date <= end_date)].copy()
+
 latest = df.iloc[-1]
 
 if page == "Research Overview":
@@ -74,7 +107,30 @@ if page == "Research Overview":
         "Data Health → India VIX Regime → Correlation → 11:15 Validation → "
         "Setup Backtest → Market Replay → Walk-Forward Validation"
     )
-    st.success("Phase 1 foundation is operational: schema validation and point-in-time VIX features.")
+    st.success("Phase 2 is operational: historical import, NSE sessions, VIX intelligence and 11:15 outcomes.")
+
+elif page == "Historical Import Bridge":
+    st.subheader("Historical Database & Import Bridge")
+    st.write(
+        "Upload combined or separate CSV exports. The bridge standardises common column names, "
+        "joins matching timestamps, removes duplicates and keeps NSE-session observations."
+    )
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Imported files", len(uploaded) if uploaded else 0)
+    c2.metric("Historical rows", f"{len(df):,}")
+    c3.metric("Sessions", df["session_date"].nunique())
+    c4.metric("11:15 sessions", len(build_1115_outcomes(df)))
+    st.code("timestamp,nifty_close,india_vix_close", language="text")
+    st.download_button(
+        "Download merged research data pack",
+        df.to_csv(index=False).encode(),
+        "institutional_research_history.csv",
+        "text/csv",
+    )
+    st.caption(
+        "Streamlit's local filesystem is not permanent. Download this merged data pack after every "
+        "incremental import; durable cloud database storage will be added in a later phase."
+    )
 
 elif page == "Data Health":
     st.subheader("Dataset health")
@@ -83,6 +139,11 @@ elif page == "Data Health":
     c1.metric("Start", str(df["timestamp"].min()))
     c2.metric("End", str(df["timestamp"].max()))
     c3.metric("Duplicate timestamps", int(df["timestamp"].duplicated().sum()))
+    quality = session_quality(df)
+    complete_pct = quality["complete"].mean() * 100 if not quality.empty else 0
+    st.metric("Complete sessions", f"{complete_pct:.1f}%")
+    st.dataframe(quality.tail(30), use_container_width=True)
+    st.subheader("Latest observations")
     st.dataframe(df.tail(20), use_container_width=True)
 
 elif page == "India VIX Intelligence":
@@ -109,16 +170,26 @@ elif page == "VIX–Index Correlation":
 
 elif page == "11:15 Validation":
     st.subheader("11:15 forward-return research")
-    st.warning(
-        "The demonstration dataset is not restricted to actual NSE sessions. Upload timestamped "
-        "market data to perform a valid 11:15 study."
-    )
-    at_1115 = df[(df["timestamp"].dt.hour == 11) & (df["timestamp"].dt.minute == 15)].copy()
-    if at_1115.empty:
+    if is_demo:
+        st.warning("Demonstration outcomes are synthetic and are only for interface verification.")
+    outcomes = build_1115_outcomes(df)
+    if outcomes.empty:
         st.info("No 11:15 observations exist in the current dataset.")
     else:
-        result = forward_return_study(at_1115, "vix_regime", [1, 2, 4])
-        st.dataframe(result, use_container_width=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Valid sessions", len(outcomes))
+        c2.metric("Average MFE", f"{outcomes['mfe_close_pct'].mean():.2f}%")
+        c3.metric("Average MAE", f"{outcomes['mae_close_pct'].mean():.2f}%")
+        st.subheader("VIX-regime outcome summary")
+        st.dataframe(outcome_summary(outcomes), use_container_width=True)
+        st.subheader("Session-level outcomes")
+        st.dataframe(outcomes, use_container_width=True)
+        st.download_button(
+            "Download 11:15 outcome dataset",
+            outcomes.to_csv(index=False).encode(),
+            "phase2_1115_vix_outcomes.csv",
+            "text/csv",
+        )
 
 elif page == "Market Replay":
     st.subheader("Point-in-time market replay")
@@ -146,4 +217,3 @@ elif page == "Setup Backtester":
             "text/csv",
         )
     st.caption("Next phase will join RF, Sector RS, Futures OI, Options and auction-structure signals.")
-
